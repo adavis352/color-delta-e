@@ -12,19 +12,33 @@ type Lab = (f64, f64, f64);
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() != 3 {
-        print_usage(&args[0]);
-        return ExitCode::from(if args.len() == 2 && is_help(&args[1]) { 0 } else { 1 });
+    let mut use_ciede2000 = false;
+    let mut positional: Vec<&String> = Vec::new();
+    for arg in &args[1..] {
+        if is_help(arg) {
+            print_usage(&args[0]);
+            return ExitCode::SUCCESS;
+        }
+        if arg == "--ciede2000" || arg == "-2" {
+            use_ciede2000 = true;
+        } else {
+            positional.push(arg);
+        }
     }
 
-    let a = match parse_color(&args[1]) {
+    if positional.len() != 2 {
+        print_usage(&args[0]);
+        return ExitCode::FAILURE;
+    }
+
+    let a = match parse_color(positional[0]) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let b = match parse_color(&args[2]) {
+    let b = match parse_color(positional[1]) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
@@ -34,12 +48,18 @@ fn main() -> ExitCode {
 
     let lab_a = rgb_to_lab(a);
     let lab_b = rgb_to_lab(b);
-    let de = delta_e76(lab_a, lab_b);
 
     println!("{} -> L*a*b*({:.2}, {:.2}, {:.2})", fmt_rgb(a), lab_a.0, lab_a.1, lab_a.2);
     println!("{} -> L*a*b*({:.2}, {:.2}, {:.2})", fmt_rgb(b), lab_b.0, lab_b.1, lab_b.2);
     println!();
-    println!("Delta E (CIE76): {:.2} - {}", de, interpret(de));
+
+    if use_ciede2000 {
+        let de = delta_e2000(lab_a, lab_b);
+        println!("Delta E (CIEDE2000): {:.2} - {}", de, interpret(de));
+    } else {
+        let de = delta_e76(lab_a, lab_b);
+        println!("Delta E (CIE76): {:.2} - {}", de, interpret(de));
+    }
 
     ExitCode::SUCCESS
 }
@@ -49,11 +69,15 @@ fn is_help(s: &str) -> bool {
 }
 
 fn print_usage(bin: &str) {
-    eprintln!("usage: {bin} <color1> <color2>");
+    eprintln!("usage: {bin} [--ciede2000] <color1> <color2>");
     eprintln!();
     eprintln!("colors may be given as a hex triplet or as r,g,b (each 0-255):");
     eprintln!("  {bin} '#ff0000' '#ff3300'");
     eprintln!("  {bin} 255,0,0 255,51,0");
+    eprintln!();
+    eprintln!("--ciede2000 (or -2) uses the CIEDE2000 formula instead of CIE76.");
+    eprintln!("It corrects for known distortions in CIE76, particularly around");
+    eprintln!("saturated blues, at the cost of a lot more arithmetic.");
 }
 
 // Accepts "#rrggbb", "rrggbb", or "r,g,b".
@@ -159,9 +183,84 @@ fn delta_e76(a: Lab, b: Lab) -> f64 {
     (dl * dl + da * da + db * db).sqrt()
 }
 
-// Thresholds are the commonly cited rules of thumb for CIE76 Delta E,
-// not a precise perceptual model - CIEDE2000 does better but is a lot
-// more arithmetic for a first pass.
+// CIEDE2000: corrects CIE76 for perceptual non-uniformities in L*a*b*,
+// mainly the way it overstates differences among saturated blues and
+// understates them for low-chroma neutrals. Formula per Sharma, Wu &
+// Dalal (2005), which is the version implementations are usually checked
+// against since the original CIE text has a couple of ambiguous spots.
+fn delta_e2000(lab1: Lab, lab2: Lab) -> f64 {
+    let (l1, a1, b1) = lab1;
+    let (l2, a2, b2) = lab2;
+
+    let c1 = (a1 * a1 + b1 * b1).sqrt();
+    let c2 = (a2 * a2 + b2 * b2).sqrt();
+    let c_bar7 = ((c1 + c2) / 2.0).powi(7);
+    let g = 0.5 * (1.0 - (c_bar7 / (c_bar7 + 25f64.powi(7))).sqrt());
+
+    let a1p = a1 * (1.0 + g);
+    let a2p = a2 * (1.0 + g);
+    let c1p = (a1p * a1p + b1 * b1).sqrt();
+    let c2p = (a2p * a2p + b2 * b2).sqrt();
+
+    let hp = |ap: f64, b: f64| -> f64 {
+        if ap == 0.0 && b == 0.0 { 0.0 } else { b.atan2(ap).to_degrees().rem_euclid(360.0) }
+    };
+    let h1p = hp(a1p, b1);
+    let h2p = hp(a2p, b2);
+
+    let dl_p = l2 - l1;
+    let dc_p = c2p - c1p;
+    let dh_p = if c1p * c2p == 0.0 {
+        0.0
+    } else {
+        let diff = h2p - h1p;
+        if diff.abs() <= 180.0 {
+            diff
+        } else if diff > 180.0 {
+            diff - 360.0
+        } else {
+            diff + 360.0
+        }
+    };
+    let dh_p_big = 2.0 * (c1p * c2p).sqrt() * (dh_p.to_radians() / 2.0).sin();
+
+    let l_bar_p = (l1 + l2) / 2.0;
+    let c_bar_p = (c1p + c2p) / 2.0;
+    let h_bar_p = if c1p * c2p == 0.0 {
+        h1p + h2p
+    } else if (h1p - h2p).abs() <= 180.0 {
+        (h1p + h2p) / 2.0
+    } else if h1p + h2p < 360.0 {
+        (h1p + h2p + 360.0) / 2.0
+    } else {
+        (h1p + h2p - 360.0) / 2.0
+    };
+
+    let t = 1.0 - 0.17 * (h_bar_p - 30.0).to_radians().cos()
+        + 0.24 * (2.0 * h_bar_p).to_radians().cos()
+        + 0.32 * (3.0 * h_bar_p + 6.0).to_radians().cos()
+        - 0.20 * (4.0 * h_bar_p - 63.0).to_radians().cos();
+
+    let delta_theta = 30.0 * (-((h_bar_p - 275.0) / 25.0).powi(2)).exp();
+    let c_bar_p7 = c_bar_p.powi(7);
+    let r_c = 2.0 * (c_bar_p7 / (c_bar_p7 + 25f64.powi(7))).sqrt();
+    let r_t = -r_c * (2.0 * delta_theta.to_radians()).sin();
+
+    let s_l = 1.0 + (0.015 * (l_bar_p - 50.0).powi(2)) / (20.0 + (l_bar_p - 50.0).powi(2)).sqrt();
+    let s_c = 1.0 + 0.045 * c_bar_p;
+    let s_h = 1.0 + 0.015 * c_bar_p * t;
+
+    let term_l = dl_p / s_l;
+    let term_c = dc_p / s_c;
+    let term_h = dh_p_big / s_h;
+
+    (term_l * term_l + term_c * term_c + term_h * term_h + r_t * term_c * term_h).sqrt()
+}
+
+// Thresholds are the commonly cited rules of thumb for CIE76 Delta E.
+// They're a decent approximation for CIEDE2000 too since both formulas
+// are scaled to roughly the same range, but treat them as a rule of
+// thumb either way, not a precise perceptual boundary.
 fn interpret(de: f64) -> &'static str {
     match de {
         d if d < 1.0 => "not perceptible to the human eye",
@@ -203,5 +302,32 @@ mod tests {
         let black = rgb_to_lab((0, 0, 0));
         let white = rgb_to_lab((255, 255, 255));
         assert!(delta_e76(black, white) > 90.0);
+    }
+
+    #[test]
+    fn identical_colors_have_zero_ciede2000_delta() {
+        let lab = rgb_to_lab((120, 45, 200));
+        assert!(delta_e2000(lab, lab) < 1e-9);
+    }
+
+    // Reference pairs from Sharma, Wu & Dalal's published CIEDE2000 test
+    // data (2005), used by most implementations to check against the
+    // formula's special cases (near-zero chroma, hue averaging across
+    // the 0/360 boundary).
+    #[test]
+    fn matches_sharma_reference_values() {
+        let cases: [((f64, f64, f64), (f64, f64, f64), f64); 4] = [
+            ((50.0, 2.6772, -79.7751), (50.0, 0.0, -82.7485), 2.0425),
+            ((50.0, -1.3802, -84.2814), (50.0, 0.0, -82.7485), 1.0000),
+            ((50.0, 2.5, 0.0), (73.0, 25.0, -18.0), 27.1492),
+            ((16.2550, -0.7315, -0.5406), (16.0819, -0.0499, -0.0389), 0.6377),
+        ];
+        for (a, b, expected) in cases {
+            let got = delta_e2000(a, b);
+            assert!(
+                (got - expected).abs() < 0.001,
+                "expected {expected}, got {got} for {a:?} vs {b:?}"
+            );
+        }
     }
 }

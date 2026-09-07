@@ -32,6 +32,15 @@ comma separated `r,g,b` values:
 $ deltae 255,0,0 255,51,0
 ```
 
+By default the tool uses CIE76, which is simple but distorts distances
+in some regions of color space (saturated blues especially). Pass
+`--ciede2000` (or `-2`) to use the more accurate, more computationally
+involved CIEDE2000 formula instead:
+
+```
+$ deltae --ciede2000 '#ff0000' '#ff3300'
+```
+
 Delta E is roughly interpreted as:
 
 | Delta E | Meaning |
@@ -52,6 +61,5 @@ cargo build --release
 
 ## Status
 
-Early. CIE76 is the simplest Delta E formula and is known to distort
-distances in some regions of color space (saturated blues especially).
-See the roadmap for what's planned.
+Early. CIE76 and CIEDE2000 are both implemented; named CSS colors,
+JSON output, HSL support, and batch mode are still planned.
