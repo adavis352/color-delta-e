@@ -25,11 +25,12 @@ $ deltae '#ff0000' '#ff3300'
 Delta E (CIE76): 6.05 - perceptible at a glance
 ```
 
-Colors can be given as a hex triplet (with or without the `#`) or as
-comma separated `r,g,b` values:
+Colors can be given as a hex triplet (with or without the `#`), as
+comma separated `r,g,b` values, or as a CSS named color:
 
 ```
 $ deltae 255,0,0 255,51,0
+$ deltae tomato orangered
 ```
 
 By default the tool uses CIE76, which is simple but distorts distances
@@ -61,5 +62,5 @@ cargo build --release
 
 ## Status
 
-Early. CIE76 and CIEDE2000 are both implemented; named CSS colors,
-JSON output, HSL support, and batch mode are still planned.
+Early. CIE76, CIEDE2000, and named CSS colors are implemented; JSON
+output, HSL support, and batch mode are still planned.
