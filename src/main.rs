@@ -13,17 +13,45 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
     let mut use_ciede2000 = false;
+    let mut format = OutputFormat::Text;
     let mut positional: Vec<&String> = Vec::new();
-    for arg in &args[1..] {
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
         if is_help(arg) {
             print_usage(&args[0]);
             return ExitCode::SUCCESS;
         }
         if arg == "--ciede2000" || arg == "-2" {
             use_ciede2000 = true;
+        } else if let Some(value) = arg.strip_prefix("--format=") {
+            match OutputFormat::parse(value) {
+                Some(f) => format = f,
+                None => {
+                    eprintln!("error: unrecognized format '{value}' (expected 'text' or 'json')");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else if arg == "--format" {
+            i += 1;
+            let value = match args.get(i) {
+                Some(v) => v,
+                None => {
+                    eprintln!("error: --format requires a value ('text' or 'json')");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match OutputFormat::parse(value) {
+                Some(f) => format = f,
+                None => {
+                    eprintln!("error: unrecognized format '{value}' (expected 'text' or 'json')");
+                    return ExitCode::FAILURE;
+                }
+            }
         } else {
             positional.push(arg);
         }
+        i += 1;
     }
 
     if positional.len() != 2 {
@@ -49,19 +77,94 @@ fn main() -> ExitCode {
     let lab_a = rgb_to_lab(a);
     let lab_b = rgb_to_lab(b);
 
-    println!("{} -> L*a*b*({:.2}, {:.2}, {:.2})", fmt_rgb(a), lab_a.0, lab_a.1, lab_a.2);
-    println!("{} -> L*a*b*({:.2}, {:.2}, {:.2})", fmt_rgb(b), lab_b.0, lab_b.1, lab_b.2);
-    println!();
+    let formula_name = if use_ciede2000 { "ciede2000" } else { "cie76" };
+    let de = if use_ciede2000 { delta_e2000(lab_a, lab_b) } else { delta_e76(lab_a, lab_b) };
 
-    if use_ciede2000 {
-        let de = delta_e2000(lab_a, lab_b);
-        println!("Delta E (CIEDE2000): {:.2} - {}", de, interpret(de));
-    } else {
-        let de = delta_e76(lab_a, lab_b);
-        println!("Delta E (CIE76): {:.2} - {}", de, interpret(de));
+    match format {
+        OutputFormat::Text => {
+            println!("{} -> L*a*b*({:.2}, {:.2}, {:.2})", fmt_rgb(a), lab_a.0, lab_a.1, lab_a.2);
+            println!("{} -> L*a*b*({:.2}, {:.2}, {:.2})", fmt_rgb(b), lab_b.0, lab_b.1, lab_b.2);
+            println!();
+            let label = if use_ciede2000 { "CIEDE2000" } else { "CIE76" };
+            println!("Delta E ({label}): {:.2} - {}", de, interpret(de));
+        }
+        OutputFormat::Json => {
+            println!("{}", to_json(positional[0], a, lab_a, positional[1], b, lab_b, formula_name, de));
+        }
     }
 
     ExitCode::SUCCESS
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
+impl OutputFormat {
+    fn parse(s: &str) -> Option<OutputFormat> {
+        match s {
+            "text" => Some(OutputFormat::Text),
+            "json" => Some(OutputFormat::Json),
+            _ => None,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn to_json(
+    input_a: &str,
+    rgb_a: Rgb,
+    lab_a: Lab,
+    input_b: &str,
+    rgb_b: Rgb,
+    lab_b: Lab,
+    formula: &str,
+    de: f64,
+) -> String {
+    format!(
+        concat!(
+            "{{\"color1\":{},\"color2\":{},",
+            "\"formula\":\"{}\",\"delta_e\":{:.2},\"interpretation\":\"{}\"}}"
+        ),
+        color_json(input_a, rgb_a, lab_a),
+        color_json(input_b, rgb_b, lab_b),
+        formula,
+        de,
+        interpret(de),
+    )
+}
+
+fn color_json(input: &str, (r, g, b): Rgb, (l, la, lb): Lab) -> String {
+    format!(
+        "{{\"input\":\"{}\",\"hex\":\"{:02x}{:02x}{:02x}\",\"rgb\":[{},{},{}],\"lab\":{{\"l\":{:.2},\"a\":{:.2},\"b\":{:.2}}}}}",
+        json_escape(input),
+        r,
+        g,
+        b,
+        r,
+        g,
+        b,
+        l,
+        la,
+        lb,
+    )
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn is_help(s: &str) -> bool {
@@ -69,7 +172,7 @@ fn is_help(s: &str) -> bool {
 }
 
 fn print_usage(bin: &str) {
-    eprintln!("usage: {bin} [--ciede2000] <color1> <color2>");
+    eprintln!("usage: {bin} [--ciede2000] [--format text|json] <color1> <color2>");
     eprintln!();
     eprintln!("colors may be given as a hex triplet, as r,g,b (each 0-255), or as a");
     eprintln!("CSS named color:");
@@ -80,6 +183,9 @@ fn print_usage(bin: &str) {
     eprintln!("--ciede2000 (or -2) uses the CIEDE2000 formula instead of CIE76.");
     eprintln!("It corrects for known distortions in CIE76, particularly around");
     eprintln!("saturated blues, at the cost of a lot more arithmetic.");
+    eprintln!();
+    eprintln!("--format json prints a single machine readable JSON object instead");
+    eprintln!("of the default text report.");
 }
 
 // Accepts "#rrggbb", "rrggbb", "r,g,b", or a CSS named color like "rebeccapurple".
@@ -455,6 +561,39 @@ mod tests {
     #[test]
     fn rejects_unknown_named_color() {
         assert!(parse_color("notacolor").is_err());
+    }
+
+    #[test]
+    fn format_parses_known_values_only() {
+        assert!(OutputFormat::parse("text") == Some(OutputFormat::Text));
+        assert!(OutputFormat::parse("json") == Some(OutputFormat::Json));
+        assert!(OutputFormat::parse("xml").is_none());
+    }
+
+    #[test]
+    fn json_escape_handles_quotes_and_backslashes() {
+        assert_eq!(json_escape(r#"say "hi"\now"#), r#"say \"hi\"\\now"#);
+    }
+
+    #[test]
+    fn color_json_reports_hex_rgb_and_lab() {
+        let lab = rgb_to_lab((255, 0, 0));
+        let json = color_json("#ff0000", (255, 0, 0), lab);
+        assert!(json.contains("\"input\":\"#ff0000\""));
+        assert!(json.contains("\"hex\":\"ff0000\""));
+        assert!(json.contains("\"rgb\":[255,0,0]"));
+        assert!(json.contains("\"l\":53.24"));
+    }
+
+    #[test]
+    fn to_json_is_well_formed_and_matches_inputs() {
+        let lab_a = rgb_to_lab((255, 0, 0));
+        let lab_b = rgb_to_lab((255, 51, 0));
+        let de = delta_e76(lab_a, lab_b);
+        let json = to_json("#ff0000", (255, 0, 0), lab_a, "#ff3300", (255, 51, 0), lab_b, "cie76", de);
+        assert!(json.starts_with('{') && json.ends_with('}'));
+        assert!(json.contains("\"formula\":\"cie76\""));
+        assert!(json.contains(&format!("\"delta_e\":{:.2}", de)));
     }
 
     #[test]

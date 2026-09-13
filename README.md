@@ -42,6 +42,14 @@ involved CIEDE2000 formula instead:
 $ deltae --ciede2000 '#ff0000' '#ff3300'
 ```
 
+Pass `--format json` to get a single machine readable JSON object instead
+of the text report, useful for piping into scripts or other tools:
+
+```
+$ deltae --format json '#ff0000' '#ff3300'
+{"color1":{"input":"#ff0000","hex":"ff0000","rgb":[255,0,0],"lab":{"l":53.24,"a":80.09,"b":67.20}},"color2":{"input":"#ff3300","hex":"ff3300","rgb":[255,51,0],"lab":{"l":54.29,"a":74.87,"b":68.30}},"formula":"cie76","delta_e":6.05,"interpretation":"perceptible at a glance"}
+```
+
 Delta E is roughly interpreted as:
 
 | Delta E | Meaning |
@@ -62,5 +70,5 @@ cargo build --release
 
 ## Status
 
-Early. CIE76, CIEDE2000, and named CSS colors are implemented; JSON
-output, HSL support, and batch mode are still planned.
+Early. CIE76, CIEDE2000, named CSS colors, and JSON output are
+implemented; HSL support and batch mode are still planned.
