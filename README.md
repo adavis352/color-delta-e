@@ -19,17 +19,22 @@ shifted colors more than intended.
 
 ```
 $ deltae '#ff0000' '#ff3300'
-#ff0000 -> L*a*b*(53.24, 80.09, 67.20)
-#ff3300 -> L*a*b*(54.29, 74.87, 68.30)
+#ff0000 / hsl(0, 100%, 50%) -> L*a*b*(53.24, 80.09, 67.20)
+#ff3300 / hsl(12, 100%, 50%) -> L*a*b*(54.29, 74.87, 68.30)
 
 Delta E (CIE76): 6.05 - perceptible at a glance
 ```
 
+Every color is echoed back as both hex and HSL regardless of how it was
+entered, so you can see the same color in either notation.
+
 Colors can be given as a hex triplet (with or without the `#`), as
-comma separated `r,g,b` values, or as a CSS named color:
+comma separated `r,g,b` values, as `hsl(h, s%, l%)`, or as a CSS named
+color:
 
 ```
 $ deltae 255,0,0 255,51,0
+$ deltae 'hsl(0, 100%, 50%)' 'hsl(12, 100%, 50%)'
 $ deltae tomato orangered
 ```
 
@@ -47,7 +52,7 @@ of the text report, useful for piping into scripts or other tools:
 
 ```
 $ deltae --format json '#ff0000' '#ff3300'
-{"color1":{"input":"#ff0000","hex":"ff0000","rgb":[255,0,0],"lab":{"l":53.24,"a":80.09,"b":67.20}},"color2":{"input":"#ff3300","hex":"ff3300","rgb":[255,51,0],"lab":{"l":54.29,"a":74.87,"b":68.30}},"formula":"cie76","delta_e":6.05,"interpretation":"perceptible at a glance"}
+{"color1":{"input":"#ff0000","hex":"ff0000","rgb":[255,0,0],"hsl":{"h":0.00,"s":100.00,"l":50.00},"lab":{"l":53.24,"a":80.09,"b":67.20}},"color2":{"input":"#ff3300","hex":"ff3300","rgb":[255,51,0],"hsl":{"h":12.00,"s":100.00,"l":50.00},"lab":{"l":54.29,"a":74.87,"b":68.30}},"formula":"cie76","delta_e":6.05,"interpretation":"perceptible at a glance"}
 ```
 
 Delta E is roughly interpreted as:
@@ -70,5 +75,5 @@ cargo build --release
 
 ## Status
 
-Early. CIE76, CIEDE2000, named CSS colors, and JSON output are
-implemented; HSL support and batch mode are still planned.
+Early. CIE76, CIEDE2000, named CSS colors, HSL input/output, and JSON
+output are implemented; batch mode is still planned.

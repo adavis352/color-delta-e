@@ -82,8 +82,22 @@ fn main() -> ExitCode {
 
     match format {
         OutputFormat::Text => {
-            println!("{} -> L*a*b*({:.2}, {:.2}, {:.2})", fmt_rgb(a), lab_a.0, lab_a.1, lab_a.2);
-            println!("{} -> L*a*b*({:.2}, {:.2}, {:.2})", fmt_rgb(b), lab_b.0, lab_b.1, lab_b.2);
+            println!(
+                "{} / {} -> L*a*b*({:.2}, {:.2}, {:.2})",
+                fmt_rgb(a),
+                fmt_hsl(a),
+                lab_a.0,
+                lab_a.1,
+                lab_a.2
+            );
+            println!(
+                "{} / {} -> L*a*b*({:.2}, {:.2}, {:.2})",
+                fmt_rgb(b),
+                fmt_hsl(b),
+                lab_b.0,
+                lab_b.1,
+                lab_b.2
+            );
             println!();
             let label = if use_ciede2000 { "CIEDE2000" } else { "CIE76" };
             println!("Delta E ({label}): {:.2} - {}", de, interpret(de));
@@ -136,9 +150,14 @@ fn to_json(
     )
 }
 
-fn color_json(input: &str, (r, g, b): Rgb, (l, la, lb): Lab) -> String {
+fn color_json(input: &str, rgb @ (r, g, b): Rgb, (l, la, lb): Lab) -> String {
+    let (h, s, sl) = rgb_to_hsl(rgb);
     format!(
-        "{{\"input\":\"{}\",\"hex\":\"{:02x}{:02x}{:02x}\",\"rgb\":[{},{},{}],\"lab\":{{\"l\":{:.2},\"a\":{:.2},\"b\":{:.2}}}}}",
+        concat!(
+            "{{\"input\":\"{}\",\"hex\":\"{:02x}{:02x}{:02x}\",\"rgb\":[{},{},{}],",
+            "\"hsl\":{{\"h\":{:.2},\"s\":{:.2},\"l\":{:.2}}},",
+            "\"lab\":{{\"l\":{:.2},\"a\":{:.2},\"b\":{:.2}}}}}"
+        ),
         json_escape(input),
         r,
         g,
@@ -146,6 +165,9 @@ fn color_json(input: &str, (r, g, b): Rgb, (l, la, lb): Lab) -> String {
         r,
         g,
         b,
+        h,
+        s,
+        sl,
         l,
         la,
         lb,
@@ -174,10 +196,11 @@ fn is_help(s: &str) -> bool {
 fn print_usage(bin: &str) {
     eprintln!("usage: {bin} [--ciede2000] [--format text|json] <color1> <color2>");
     eprintln!();
-    eprintln!("colors may be given as a hex triplet, as r,g,b (each 0-255), or as a");
-    eprintln!("CSS named color:");
+    eprintln!("colors may be given as a hex triplet, as r,g,b (each 0-255), as");
+    eprintln!("hsl(h, s%, l%), or as a CSS named color:");
     eprintln!("  {bin} '#ff0000' '#ff3300'");
     eprintln!("  {bin} 255,0,0 255,51,0");
+    eprintln!("  {bin} 'hsl(0, 100%, 50%)' 'hsl(16, 100%, 50%)'");
     eprintln!("  {bin} tomato orangered");
     eprintln!();
     eprintln!("--ciede2000 (or -2) uses the CIEDE2000 formula instead of CIE76.");
@@ -188,7 +211,8 @@ fn print_usage(bin: &str) {
     eprintln!("of the default text report.");
 }
 
-// Accepts "#rrggbb", "rrggbb", "r,g,b", or a CSS named color like "rebeccapurple".
+// Accepts "#rrggbb", "rrggbb", "r,g,b", "hsl(h, s%, l%)", or a CSS named
+// color like "rebeccapurple".
 fn parse_color(input: &str) -> Result<Rgb, String> {
     let s = input.trim();
 
@@ -197,6 +221,10 @@ fn parse_color(input: &str) -> Result<Rgb, String> {
     }
     if s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit()) {
         return parse_hex(s);
+    }
+    let lower = s.to_ascii_lowercase();
+    if let Some(inner) = lower.strip_prefix("hsl(").and_then(|rest| rest.strip_suffix(')')) {
+        return parse_hsl(inner);
     }
     if s.contains(',') {
         let parts: Vec<&str> = s.split(',').map(str::trim).collect();
@@ -368,6 +396,80 @@ fn named_color(name: &str) -> Option<Rgb> {
         _ => return None,
     };
     Some(rgb)
+}
+
+// Parses the inside of "hsl(...)": "h, s%, l%" with optional whitespace.
+// The '%' on s and l is accepted with or without it, since it's easy to
+// drop when typing these by hand.
+fn parse_hsl(inner: &str) -> Result<Rgb, String> {
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    if parts.len() != 3 {
+        return Err(format!("expected hsl(h, s%, l%), got {} components", parts.len()));
+    }
+    let h = parts[0].parse::<f64>().map_err(|_| format!("invalid hue: '{}'", parts[0]))?;
+    let s = parse_percent("saturation", parts[1])?;
+    let l = parse_percent("lightness", parts[2])?;
+    if !(0.0..=100.0).contains(&s) || !(0.0..=100.0).contains(&l) {
+        return Err("saturation and lightness must be between 0% and 100%".to_string());
+    }
+    Ok(hsl_to_rgb(h.rem_euclid(360.0), s, l))
+}
+
+fn parse_percent(label: &str, s: &str) -> Result<f64, String> {
+    let trimmed = s.strip_suffix('%').unwrap_or(s);
+    trimmed.parse::<f64>().map_err(|_| format!("invalid {label}: '{s}'"))
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> Rgb {
+    let s = s / 100.0;
+    let l = l / 100.0;
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let to_u8 = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (to_u8(r1), to_u8(g1), to_u8(b1))
+}
+
+fn rgb_to_hsl((r, g, b): Rgb) -> (f64, f64, f64) {
+    let r = r as f64 / 255.0;
+    let g = g as f64 / 255.0;
+    let b = b as f64 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let delta = max - min;
+
+    if delta == 0.0 {
+        return (0.0, 0.0, l * 100.0);
+    }
+
+    let s = if l < 0.5 { delta / (max + min) } else { delta / (2.0 - max - min) };
+    let mut h = if max == r {
+        ((g - b) / delta) % 6.0
+    } else if max == g {
+        (b - r) / delta + 2.0
+    } else {
+        (r - g) / delta + 4.0
+    };
+    h *= 60.0;
+    if h < 0.0 {
+        h += 360.0;
+    }
+    (h, s * 100.0, l * 100.0)
+}
+
+fn fmt_hsl(rgb: Rgb) -> String {
+    let (h, s, l) = rgb_to_hsl(rgb);
+    format!("hsl({h:.0}, {s:.0}%, {l:.0}%)")
 }
 
 fn parse_hex(hex: &str) -> Result<Rgb, String> {
@@ -564,6 +666,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_hsl_input() {
+        assert_eq!(parse_color("hsl(0, 100%, 50%)").unwrap(), (255, 0, 0));
+        assert_eq!(parse_color("HSL(120, 100%, 50%)").unwrap(), (0, 255, 0));
+        assert_eq!(parse_color("hsl(0, 0%, 100%)").unwrap(), (255, 255, 255));
+        assert_eq!(parse_color("hsl(0, 0%, 0%)").unwrap(), (0, 0, 0));
+    }
+
+    #[test]
+    fn hsl_percent_sign_is_optional() {
+        assert_eq!(parse_color("hsl(0, 100, 50)").unwrap(), parse_color("hsl(0, 100%, 50%)").unwrap());
+    }
+
+    #[test]
+    fn rejects_out_of_range_hsl_percent() {
+        assert!(parse_color("hsl(0, 150%, 50%)").is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_hsl() {
+        assert!(parse_color("hsl(0, 100%)").is_err());
+        assert!(parse_color("hsl(x, 100%, 50%)").is_err());
+    }
+
+    #[test]
+    fn rgb_hsl_round_trips_for_primaries() {
+        for rgb in [(255, 0, 0), (0, 255, 0), (0, 0, 255), (128, 64, 32), (10, 200, 150)] {
+            let (h, s, l) = rgb_to_hsl(rgb);
+            let back = hsl_to_rgb(h, s, l);
+            let close = |a: u8, b: u8| (a as i16 - b as i16).abs() <= 1;
+            assert!(
+                close(rgb.0, back.0) && close(rgb.1, back.1) && close(rgb.2, back.2),
+                "{rgb:?} -> hsl({h}, {s}, {l}) -> {back:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn grayscale_has_zero_saturation() {
+        let (_, s, _) = rgb_to_hsl((128, 128, 128));
+        assert_eq!(s, 0.0);
+    }
+
+    #[test]
     fn format_parses_known_values_only() {
         assert!(OutputFormat::parse("text") == Some(OutputFormat::Text));
         assert!(OutputFormat::parse("json") == Some(OutputFormat::Json));
@@ -582,6 +727,7 @@ mod tests {
         assert!(json.contains("\"input\":\"#ff0000\""));
         assert!(json.contains("\"hex\":\"ff0000\""));
         assert!(json.contains("\"rgb\":[255,0,0]"));
+        assert!(json.contains("\"hsl\":{\"h\":0.00,\"s\":100.00,\"l\":50.00}"));
         assert!(json.contains("\"l\":53.24"));
     }
 
